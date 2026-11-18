@@ -155,6 +155,21 @@ async function dbPut(name, data) {
 async function findRom() {
   let data = await dbGet(ROM_FILE);
   if (data) return new Uint8Array(data);
+  // Private link: the page address carries a key (#k=...) that unlocks the encrypted copy stored
+  // next to the page. The key is never sent to the server. The unlocked file is then remembered here.
+  try {
+    const m = /[#&]k=([A-Za-z0-9_-]{40,})/.exec(location.hash);
+    if (m && crypto.subtle) {
+      const raw = Uint8Array.from(atob(m[1].replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+      const r = await fetch(GAME + '.rom.enc');
+      if (r.ok) {
+        const enc = new Uint8Array(await r.arrayBuffer());
+        const key = await crypto.subtle.importKey('raw', raw, 'AES-CBC', false, ['decrypt']);
+        const b = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv: enc.slice(0, 16) }, key, enc.slice(16)));
+        if (b[0] === 0x50 && b[1] === 0x4B) { await dbPut(ROM_FILE, b.buffer); return b; }
+      }
+    }
+  } catch (e) { console.log('private link: could not unlock the game file'); }
   try {
     const r = await fetch(ROM_FILE, { cache: 'force-cache' });
     if (r.ok) { const b = new Uint8Array(await r.arrayBuffer()); if (b[0] === 0x50 && b[1] === 0x4B) return b; }
