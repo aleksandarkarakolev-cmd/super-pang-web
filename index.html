@@ -51,7 +51,9 @@ const msg = document.getElementById('msg'), canvas = document.getElementById('ca
 
 // ---- touch screen controls -------------------------------------------------------------
 // The buttons send the same keys a keyboard would (arrows, Ctrl, 5, 1), so MAME needs no changes.
-const TOUCH = new URLSearchParams(location.search).has('touch') || 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+// Shown when the main way of pointing is a finger (phone, tablet). A laptop with a touch screen has a
+// mouse as its main pointer, so there the buttons appear only once the screen is really touched.
+let TOUCH = new URLSearchParams(location.search).has('touch') || (matchMedia('(pointer: coarse)').matches && matchMedia('(hover: none)').matches);
 const KEYS = {
   left: ['ArrowLeft', 'ArrowLeft', 37], right: ['ArrowRight', 'ArrowRight', 39], up: ['ArrowUp', 'ArrowUp', 38], down: ['ArrowDown', 'ArrowDown', 40],
   fire: ['ControlLeft', 'Control', 17], coin: ['Digit5', '5', 53], start: ['Digit1', '1', 49]
@@ -97,7 +99,10 @@ function fit() {
 }
 addEventListener('resize', fit);
 
-if (TOUCH) {
+let touchReady = false;
+function setupTouch() {
+  if (touchReady) return;
+  touchReady = true; TOUCH = true;
   document.body.classList.add('touch');
   // simple buttons: held while a finger is on them
   for (const name of ['fire', 'coin', 'start']) {
@@ -134,7 +139,10 @@ if (TOUCH) {
   for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) pad.addEventListener(ev, e => { if (e.pointerId === padPointer) { padPointer = null; padSet(false, false, false, false); } });
   // no page zoom / scroll / long-press menu while playing
   for (const ev of ['touchmove', 'gesturestart', 'contextmenu', 'dblclick']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+  fit();
 }
+if (TOUCH) setupTouch();
+else addEventListener('touchstart', setupTouch, { once: true, passive: true });   // a real finger on the screen
 fit();
 
 function db() {
