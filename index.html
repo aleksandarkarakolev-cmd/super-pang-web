@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="mk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Super Pang</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #ddd; font-family: system-ui, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; background: #000; image-rendering: pixelated; outline: none; }
+  #msg { position: fixed; left: 0; right: 0; top: 40%; text-align: center; font-size: 18px; padding: 0 16px; }
+  #msg button, #msg label { display: inline-block; margin-top: 14px; padding: 12px 22px; font-size: 17px; border-radius: 8px;
+    border: 0; background: #ffc107; color: #000; cursor: pointer; }
+  #help { position: fixed; left: 0; right: 0; bottom: 6px; text-align: center; font-size: 12px; color: #777; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="canvas" width="768" height="480" tabindex="1"></canvas></div>
+<div id="msg">Се вчитува...</div>
+<div id="help">5 = жетон &nbsp; 1 = старт &nbsp; стрелки = движење &nbsp; Ctrl = пукање &nbsp; (играч 2: 6, 2, R/F/D/G, A)</div>
+<script>
+// Single-game MAME page. The ROM comes from (1) this browser's storage, (2) a file next to the
+// page, or (3) a file the player picks once; a picked file is remembered in this browser.
+const VIDEO = new URLSearchParams(location.search).get('video') || 'bgfx';
+const GAME = 'spang', ROM_FILE = GAME + '.zip', NATIVE_W = 384, NATIVE_H = 240;
+const msg = document.getElementById('msg'), canvas = document.getElementById('canvas');
+
+function fit() {
+  const s = Math.min(innerWidth / NATIVE_W, innerHeight / NATIVE_H);
+  canvas.style.width = Math.floor(NATIVE_W * s) + 'px';
+  canvas.style.height = Math.floor(NATIVE_H * s) + 'px';
+}
+addEventListener('resize', fit); fit();
+
+function db() {
+  return new Promise((ok, no) => {
+    const r = indexedDB.open('mame-roms', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('roms');
+    r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error);
+  });
+}
+async function dbGet(name) {
+  try { const d = await db(); return await new Promise(ok => { const q = d.transaction('roms').objectStore('roms').get(name); q.onsuccess = () => ok(q.result || null); q.onerror = () => ok(null); }); }
+  catch (e) { return null; }
+}
+async function dbPut(name, data) {
+  try { const d = await db(); d.transaction('roms', 'readwrite').objectStore('roms').put(data, name); } catch (e) {}
+}
+
+async function findRom() {
+  let data = await dbGet(ROM_FILE);
+  if (data) return new Uint8Array(data);
+  try {
+    const r = await fetch(ROM_FILE, { cache: 'force-cache' });
+    if (r.ok) { const b = new Uint8Array(await r.arrayBuffer()); if (b[0] === 0x50 && b[1] === 0x4B) return b; }
+  } catch (e) {}
+  return await new Promise(ok => {
+    msg.innerHTML = 'За играта е потребна датотеката <b>' + ROM_FILE + '</b> од вашиот уред.<br>' +
+      '<label>Избери ' + ROM_FILE + '<input id="pick" type="file" accept=".zip" hidden></label>' +
+      '<br><small>Се памети во овој прелистувач; следниот пат играта почнува веднаш.</small>';
+    document.getElementById('pick').onchange = async e => {
+      const f = e.target.files[0]; if (!f) return;
+      const b = new Uint8Array(await f.arrayBuffer());
+      await dbPut(ROM_FILE, b.buffer);
+      ok(b);
+    };
+  });
+}
+
+function resumeAudio() {
+  try { const c = jsmame_web_audio.get_context(); if (c && c.state !== 'running') c.resume(); } catch (e) {}
+  try { if (window.SDL3 && SDL3.audioContext && SDL3.audioContext.state !== 'running') SDL3.audioContext.resume(); } catch (e) {}
+}
+['keydown', 'pointerdown', 'touchstart'].forEach(ev => addEventListener(ev, resumeAudio, true));
+// keys the browser would otherwise act on (scrolling, tab switching focus)
+addEventListener('keydown', e => { if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Tab'].includes(e.key)) e.preventDefault(); });
+
+(async () => {
+  const rom = await findRom();
+  msg.textContent = 'Се пушта играта...';
+  // The emulator may be stored compressed (spang.wasm.gz): unpack it here. Otherwise spang.wasm is loaded as usual.
+  let wasmBinary = null;
+  try {
+    const r = await fetch(GAME + '.wasm.gz');
+    if (r.ok && 'DecompressionStream' in window) {
+      const raw = new Uint8Array(await r.arrayBuffer());
+      // some servers unpack .gz themselves: then the bytes already start with "\0asm"
+      if (raw[0] === 0x1f && raw[1] === 0x8b) {
+        wasmBinary = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+      } else if (raw[0] === 0 && raw[1] === 0x61) wasmBinary = raw;
+    }
+  } catch (e) {}
+  const wasmUrl = wasmBinary ? URL.createObjectURL(new Blob([wasmBinary], { type: 'application/wasm' })) : null;
+  window.Module = {
+    locateFile: (path, dir) => (wasmUrl && path.endsWith('.wasm')) ? wasmUrl : dir + path,
+    arguments: [GAME, '-rompath', '/roms', '-window', '-nokeepaspect', '-resolution', '768x480', '-skip_gameinfo', '-nomouse', '-video', VIDEO,'-samplerate', '48000'],
+    canvas: canvas,
+    noInitialRun: false,
+    print: t => console.log(t),
+    printErr: t => console.log(t),
+    // the browser only has OpenGL ES (WebGL): tell SDL not to pick its desktop-OpenGL drawing code
+    preRun: [() => { ENV.SDL_RENDER_DRIVER = 'opengles2'; FS.mkdir('/roms'); FS.writeFile('/roms/' + ROM_FILE, rom); }],
+    onRuntimeInitialized: () => { msg.style.display = 'none'; canvas.focus(); },
+    onAbort: what => { msg.style.display = ''; msg.textContent = 'Грешка: ' + what; }
+  };
+  const s = document.createElement('script');
+  s.src = GAME + '.js';
+  s.onerror = () => { msg.textContent = 'Не може да се вчита емулаторот.'; };
+  document.body.appendChild(s);
+})();
+</script>
+</body>
+</html>
