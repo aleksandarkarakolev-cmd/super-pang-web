@@ -12,10 +12,34 @@
   #msg button, #msg label { display: inline-block; margin-top: 14px; padding: 12px 22px; font-size: 17px; border-radius: 8px;
     border: 0; background: #ffc107; color: #000; cursor: pointer; }
   #help { position: fixed; left: 0; right: 0; bottom: 6px; text-align: center; font-size: 12px; color: #777; pointer-events: none; }
+
+  /* touch controls: only shown on a touch screen (body.touch) */
+  #touch { display: none; }
+  body.touch #touch { display: block; }
+  body.touch #help { display: none; }
+  body.touch, body.touch * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  body.touch.portrait #stage { align-items: flex-start; }
+  #touch .b { position: fixed; touch-action: none; box-sizing: border-box; color: #fff; font-weight: 700; display: flex;
+    align-items: center; justify-content: center; text-align: center; border: 2px solid rgba(255,255,255,.45); background: rgba(40,60,110,.45); }
+  #touch .b.on { background: rgba(90,140,255,.85); border-color: #fff; }
+  #pad { border-radius: 50%; background: rgba(255,255,255,.10) !important; }
+  #pad i { position: absolute; font-style: normal; font-size: 22px; opacity: .8; }
+  #pad .u { top: 6%; } #pad .d { bottom: 6%; } #pad .l { left: 8%; } #pad .r { right: 8%; }
+  #pad.up .u, #pad.down .d, #pad.left .l, #pad.right .r { opacity: 1; color: #ffc107; transform: scale(1.5); }
+  #fire { border-radius: 50%; background: rgba(200,40,40,.55) !important; font-size: 18px; }
+  #fire.on { background: rgba(255,70,70,.95) !important; }
+  #coin, #start { border-radius: 10px; font-size: 14px; }
+  #coin { background: rgba(140,110,0,.6) !important; } #start { background: rgba(46,125,50,.6) !important; }
 </style>
 </head>
 <body>
 <div id="stage"><canvas id="canvas" width="768" height="480" tabindex="1"></canvas></div>
+<div id="touch">
+  <div id="pad" class="b"><i class="u">&#9650;</i><i class="d">&#9660;</i><i class="l">&#9664;</i><i class="r">&#9654;</i></div>
+  <div id="fire" class="b">ПУКАЈ</div>
+  <div id="coin" class="b">ЖЕТОН</div>
+  <div id="start" class="b">СТАРТ</div>
+</div>
 <div id="msg">Се вчитува...</div>
 <div id="help">5 = жетон &nbsp; 1 = старт &nbsp; стрелки = движење &nbsp; Ctrl = пукање &nbsp; (играч 2: 6, 2, R/F/D/G, A)</div>
 <script>
@@ -25,12 +49,93 @@ const VIDEO = new URLSearchParams(location.search).get('video') || 'bgfx';
 const GAME = 'spang', ROM_FILE = GAME + '.zip', NATIVE_W = 384, NATIVE_H = 240;
 const msg = document.getElementById('msg'), canvas = document.getElementById('canvas');
 
+// ---- touch screen controls -------------------------------------------------------------
+// The buttons send the same keys a keyboard would (arrows, Ctrl, 5, 1), so MAME needs no changes.
+const TOUCH = new URLSearchParams(location.search).has('touch') || 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+const KEYS = {
+  left: ['ArrowLeft', 'ArrowLeft', 37], right: ['ArrowRight', 'ArrowRight', 39], up: ['ArrowUp', 'ArrowUp', 38], down: ['ArrowDown', 'ArrowDown', 40],
+  fire: ['ControlLeft', 'Control', 17], coin: ['Digit5', '5', 53], start: ['Digit1', '1', 49]
+};
+const held = {};
+function sendKey(name, down) {
+  if (!!held[name] === down) return;
+  held[name] = down;
+  const k = KEYS[name];
+  const e = new KeyboardEvent(down ? 'keydown' : 'keyup', { code: k[0], key: k[1], bubbles: true, cancelable: true });
+  Object.defineProperty(e, 'keyCode', { get: () => k[2] });
+  Object.defineProperty(e, 'which', { get: () => k[2] });
+  window.dispatchEvent(e);
+}
+function place(el, x, y, w, h) { el.style.left = x + 'px'; el.style.top = y + 'px'; el.style.width = w + 'px'; el.style.height = h + 'px'; }
+
 function fit() {
-  const s = Math.min(innerWidth / NATIVE_W, innerHeight / NATIVE_H);
+  const W = innerWidth, H = innerHeight, portrait = H > W;
+  document.body.classList.toggle('portrait', portrait);
+  let s = Math.min(W / NATIVE_W, H / NATIVE_H);
   canvas.style.width = Math.floor(NATIVE_W * s) + 'px';
   canvas.style.height = Math.floor(NATIVE_H * s) + 'px';
+  if (!TOUCH) return;
+  const pad = document.getElementById('pad'), fire = document.getElementById('fire'), coin = document.getElementById('coin'), start = document.getElementById('start');
+  if (portrait) {
+    // picture on top, controls in the space under it
+    const top = Math.floor(NATIVE_H * s), room = H - top;
+    const small = Math.min(W * 0.26, 120), sh = Math.min(room * 0.14, 52);
+    place(coin, W * 0.06, top + room * 0.05, small, sh);
+    place(start, W - W * 0.06 - small, top + room * 0.05, small, sh);
+    const d = Math.min(W * 0.46, room * 0.6);
+    place(pad, W * 0.04, top + room * 0.24 + (room * 0.7 - d) / 2, d, d);
+    const f = Math.min(W * 0.34, room * 0.45);
+    place(fire, W - W * 0.07 - f, top + room * 0.24 + (room * 0.7 - f) / 2, f, f);
+  } else {
+    // picture in the middle, see-through controls over its left and right edges
+    const d = Math.min(H * 0.52, W * 0.26), f = Math.min(H * 0.38, W * 0.19), small = Math.min(W * 0.12, 110), sh = Math.min(H * 0.12, 44);
+    place(pad, W * 0.02, H - d - H * 0.06, d, d);
+    place(fire, W - f - W * 0.03, H - f - H * 0.12, f, f);
+    place(coin, W * 0.02, H * 0.04, small, sh);
+    place(start, W - small - W * 0.02, H * 0.04, small, sh);
+  }
 }
-addEventListener('resize', fit); fit();
+addEventListener('resize', fit);
+
+if (TOUCH) {
+  document.body.classList.add('touch');
+  // simple buttons: held while a finger is on them
+  for (const name of ['fire', 'coin', 'start']) {
+    const el = document.getElementById(name);
+    // a very quick tap is stretched to 70 ms, so the game (which looks at the buttons once per frame) cannot miss it
+    let downAt = 0, timer = 0;
+    const set = on => {
+      el.classList.toggle('on', on);
+      clearTimeout(timer);
+      if (on) { downAt = performance.now(); sendKey(name, true); }
+      else timer = setTimeout(() => sendKey(name, false), Math.max(0, 70 - (performance.now() - downAt)));
+    };
+    el.addEventListener('pointerdown', e => { e.preventDefault(); el.setPointerCapture(e.pointerId); set(true); });
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) el.addEventListener(ev, e => { e.preventDefault(); set(false); });
+  }
+  // direction pad: the finger's position relative to the centre gives the direction (8 ways); sliding works
+  const pad = document.getElementById('pad');
+  let padPointer = null;
+  const padSet = (l, r, u, d) => {
+    sendKey('left', l); sendKey('right', r); sendKey('up', u); sendKey('down', d);
+    pad.classList.toggle('left', l); pad.classList.toggle('right', r); pad.classList.toggle('up', u); pad.classList.toggle('down', d);
+    pad.classList.toggle('on', l || r || u || d);
+  };
+  const padMove = e => {
+    const b = pad.getBoundingClientRect();
+    const dx = (e.clientX - (b.left + b.width / 2)) / (b.width / 2), dy = (e.clientY - (b.top + b.height / 2)) / (b.height / 2);
+    const dead = 0.22;
+    if (Math.hypot(dx, dy) < dead) { padSet(false, false, false, false); return; }
+    const a = Math.atan2(dy, dx) * 180 / Math.PI;       // 0 = right, 90 = down
+    padSet(Math.abs(a) > 112.5, Math.abs(a) < 67.5, a < -22.5 && a > -157.5, a > 22.5 && a < 157.5);
+  };
+  pad.addEventListener('pointerdown', e => { e.preventDefault(); padPointer = e.pointerId; pad.setPointerCapture(e.pointerId); padMove(e); });
+  pad.addEventListener('pointermove', e => { if (e.pointerId === padPointer) { e.preventDefault(); padMove(e); } });
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) pad.addEventListener(ev, e => { if (e.pointerId === padPointer) { padPointer = null; padSet(false, false, false, false); } });
+  // no page zoom / scroll / long-press menu while playing
+  for (const ev of ['touchmove', 'gesturestart', 'contextmenu', 'dblclick']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+}
+fit();
 
 function db() {
   return new Promise((ok, no) => {
